@@ -2,7 +2,9 @@ import torch
 from .global_var import config
 from .zero_context import ZeroContext
 
+
 def zero_pre_forward(module, inputs):
+    """Helper function for using ZeroContext to gather parmas before forward."""
     enter = True
     if module._mode == "PIPE" or module._mode == "1F1B":
         if not hasattr(module, "_micro_forward_idx") or module._micro_forward_idx == -1:
@@ -12,11 +14,11 @@ def zero_pre_forward(module, inputs):
             enter = False
             module._micro_forward_idx += 1
     if enter:
-        zero_level = module._zero_level 
+        zero_level = module._zero_level
         forward_flag = 1 if zero_level == 2 else 0
         if zero_level == 2 and not module._need_release:
-            forward_flag = 2 # repeating forward in same layer
-        if module.all_param_no_grad: #only forward
+            forward_flag = 2  # repeating forward in same layer
+        if module.all_param_no_grad:  # only forward
             forward_flag = 0
         if module._mode == "1F1B":
             module._block_ctx = ZeroContext(module, module._layer_dict)
@@ -25,7 +27,9 @@ def zero_pre_forward(module, inputs):
             module._forward_block_ctx = ZeroContext(module, module._layer_dict)
             module._forward_block_ctx.enter(forward_flag)
 
+
 def zero_post_forward(module, inputs, outputs):
+    """Helper function for module _forwar_block_ctx weather exits after forward."""
     forward_flag = 1 if module._zero_level == 2 else 0
     if module.all_param_no_grad:
         forward_flag = 0
@@ -43,7 +47,9 @@ def zero_post_forward(module, inputs, outputs):
     if exit:
         module._forward_block_ctx.exit(forward_flag)
 
+
 def zero_pre_backward(module, grad_outputs):
+    """Helper function for using ZeroContext to init grad buffer before backward."""
     backward_flag = 2 if module._zero_level == 2 else 0
     if module._mode != "PIPE" and module._mode != "1F1B":
         module._backward_block_ctx = ZeroContext(module, module._layer_dict)
@@ -60,7 +66,9 @@ def zero_pre_backward(module, grad_outputs):
         else:
             module._micro_backward_idx += 1
 
+
 def zero_post_backward(module, grad_inputs, grad_outputs):
+    """Helper function for module weather release after backward."""
     backward_flag = 2 if module._zero_level == 2 else 0
     if module._mode != "PIPE" and module._mode != "1F1B":
         if module._is_first_layer: 
@@ -74,10 +82,12 @@ def zero_post_backward(module, grad_inputs, grad_outputs):
                 module.release(backward_flag)
             module._micro_backward_idx = -1
 
+
 class OneStepNoGradFunc(torch.autograd.Function):
     """
-        requires_grad = False for all inputs
+    Requires_grad = False for all inputs.
     """
+
     @staticmethod
     def forward(ctx, module, placeholder, *x):
         ctx.x = x
@@ -104,7 +114,8 @@ class OneStepNoGradFunc(torch.autograd.Function):
         grads = []
         for _ in x:
             grads.append(None)
-        return None, None, *grads 
+        return None, None, *grads
+
 
 class PreHookFunc(torch.autograd.Function):
     @staticmethod
@@ -117,6 +128,7 @@ class PreHookFunc(torch.autograd.Function):
     def backward(ctx, *grads):
         zero_post_backward(ctx.module, grads, None)
         return None, *grads
+
 
 class PostHookFunc(torch.autograd.Function):
     @staticmethod

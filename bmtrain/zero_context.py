@@ -3,8 +3,18 @@ from . import nccl
 from .global_var import config
 from .synchronize import wait_loader
 
+
 class ZeroContext:
-    def __init__(self, block : 'Block', ctx_dict : dict = None) -> None:
+    """ZeroContext is a helper class to Gather parameters before module forward and reduce scatter
+    gradients after module backward.
+
+    Args:
+        block (BLock): Input Block.
+        ctx_dict (dict): block._layer_dict.
+
+    """
+
+    def __init__(self, block: "Block", ctx_dict: dict = None) -> None:
         self.block = block
         self.ctx_dict = ctx_dict
         self._param_buffer = {}
@@ -15,11 +25,10 @@ class ZeroContext:
 
     def enter(self, flag=0, requires_grad=False):
         """
-        gather parameters
+        Gather parameters before module forward and init grad buffer before backward.
         flags = 0: normal mode
         flags = 1: gather param and not release , then save in ctx_dict
         flags = 2: not gather param and use the param in ctx_dict
-
         """
         if self.block._ready:
             return
@@ -34,16 +43,32 @@ class ZeroContext:
                     continue
                 assert kw not in self._grad_buffer
                 assert kw not in self._param_buffer
-                local_param = self.block._storage_params[kw]    
-           
+                local_param = self.block._storage_params[kw]
+
                 storage_type = local_param.storage_type()
                 if flag != 2:
-                    self._param_buffer[kw] = storage_type(val["partition_size"] * val["world_size"])
-                    self._param_tensor[kw] = torch.tensor([], dtype=self._param_buffer[kw].dtype, device=self._param_buffer[kw].device).set_(self._param_buffer[kw])
+                    self._param_buffer[kw] = storage_type(
+                        val["partition_size"] * val["world_size"]
+                    )
+                    self._param_tensor[kw] = torch.tensor(
+                        [],
+                        dtype=self._param_buffer[kw].dtype,
+                        device=self._param_buffer[kw].device,
+                    ).set_(self._param_buffer[kw])
 
                 if requires_grad and local_param.requires_grad:
-                    self._grad_buffer[kw] = storage_type(val["partition_size"] * val["world_size"])
-                    self._grad_tensor[kw] = torch.tensor([], dtype=self._grad_buffer[kw].dtype, device=self._grad_buffer[kw].device).set_(self._grad_buffer[kw]).zero_()
+                    self._grad_buffer[kw] = storage_type(
+                        val["partition_size"] * val["world_size"]
+                    )
+                    self._grad_tensor[kw] = (
+                        torch.tensor(
+                            [],
+                            dtype=self._grad_buffer[kw].dtype,
+                            device=self._grad_buffer[kw].device,
+                        )
+                        .set_(self._grad_buffer[kw])
+                        .zero_()
+                    )
             if flag != 2:
                 nccl.groupStart()
                 for kw, val in self.block._storage_info.items():
@@ -52,13 +77,13 @@ class ZeroContext:
                     nccl.allGather(
                         self.block._storage_params[kw].storage(),
                         self._param_buffer[kw],
-                        val['zero_comm']
+                        val["zero_comm"],
                     )
                 nccl.groupEnd()
 
         current_stream = torch.cuda.current_stream()
         current_stream.wait_stream(config["load_stream"])
-        
+
         # set wait stream for each storage
         for kw in self.block._storage_info.keys():
             if self.block._storage_info[kw]['world_size'] == 1:
@@ -80,23 +105,32 @@ class ZeroContext:
             if flag != 2:
                 dtype = self._param_buffer[kw_name].dtype
                 device = self._param_buffer[kw_name].device
-                param["parameter"].data = torch.tensor([], dtype=dtype, device=device).set_(self._param_buffer[kw_name], offset, shape)                
+                param["parameter"].data = torch.tensor(
+                    [], dtype=dtype, device=device
+                ).set_(self._param_buffer[kw_name], offset, shape)
             else:
                 dtype = param["parameter"].data.dtype
                 device = param["parameter"].data.device
-                param["parameter"].data = torch.tensor([], dtype=dtype, device=device).set_(self.ctx_dict[kw_name], offset, shape)
+                param["parameter"].data = torch.tensor(
+                    [], dtype=dtype, device=device
+                ).set_(self.ctx_dict[kw_name], offset, shape)
 
-            if requires_grad and kw_name in self._grad_buffer and param["parameter"].requires_grad:
-                param["parameter"].grad = torch.tensor([], dtype=dtype, device=device).set_(self._grad_buffer[kw_name], offset, shape)
+            if (
+                requires_grad
+                and kw_name in self._grad_buffer
+                and param["parameter"].requires_grad
+            ):
+                param["parameter"].grad = torch.tensor(
+                    [], dtype=dtype, device=device
+                ).set_(self._grad_buffer[kw_name], offset, shape)
 
     def __enter__(self):
         self.enter()
-    
+
     def exit(self, flag=0, backward=False):
         """
-        Reduce scatter gradients
+        Reduce scatter gradients when backward and release all parameters from buffer to block_storge when forward is done.
         """
-
         if not self._need_release:
             return
         self._need_release = False
@@ -111,13 +145,23 @@ class ZeroContext:
                 # accumulate previous gradient
                 if local_param.requires_grad:
                     if local_param.grad is None:
-                        grad_storage = val["storage_type"](val["partition_size"])   # initialize gradient if not exist
-                        local_param.grad = torch.tensor([], dtype=grad_storage.dtype, device=grad_storage.device).set_(grad_storage).zero_()
+                        grad_storage = val["storage_type"](
+                            val["partition_size"]
+                        )  # initialize gradient if not exist
+                        local_param.grad = (
+                            torch.tensor(
+                                [], dtype=grad_storage.dtype, device=grad_storage.device
+                            )
+                            .set_(grad_storage)
+                            .zero_()
+                        )
                     else:
-                        self._grad_tensor[kw][val["begin"]:val["end"]] += local_param.grad
-            
+                        self._grad_tensor[kw][
+                            val["begin"] : val["end"]
+                        ] += local_param.grad
+
             current_stream = torch.cuda.current_stream()
-            config["load_stream"].wait_stream(current_stream)   # wait for backward
+            config["load_stream"].wait_stream(current_stream)  # wait for backward
 
             with torch.cuda.stream(config["load_stream"]):
                 nccl.groupStart()
@@ -133,7 +177,7 @@ class ZeroContext:
                             self._grad_buffer[kw],
                             local_param.grad.storage(),
                             "sum",
-                            val['zero_comm']
+                            val["zero_comm"],
                         )
                 nccl.groupEnd()
 
@@ -141,7 +185,6 @@ class ZeroContext:
             for kw in self._grad_tensor.keys():
                 # grads can not be freed until reduce ops finish
                 self._grad_tensor[kw].record_stream(config["load_stream"])
-
 
         # Release all parameters from buffer to block_storge
         for param in self.block._param_info:
@@ -156,9 +199,16 @@ class ZeroContext:
                 continue
             begin = param["begin"]
             end = param["end"]
-            param["parameter"].data = torch.tensor([], dtype=dtype, device=device).set_(self.block._storage_params[kw_name].storage(), begin, end)
-            if param["parameter"].requires_grad and self.block._storage_params[kw_name].grad is not None:
-                param["parameter"].grad = torch.tensor([], dtype=dtype, device=device).set_(self.block._storage_params[kw_name].grad.storage(), begin, end)
+            param["parameter"].data = torch.tensor([], dtype=dtype, device=device).set_(
+                self.block._storage_params[kw_name].storage(), begin, end
+            )
+            if (
+                param["parameter"].requires_grad
+                and self.block._storage_params[kw_name].grad is not None
+            ):
+                param["parameter"].grad = torch.tensor(
+                    [], dtype=dtype, device=device
+                ).set_(self.block._storage_params[kw_name].grad.storage(), begin, end)
         if flag == 1:
             for i in self._param_buffer:
                 self.ctx_dict[i] = self._param_buffer[i]
@@ -166,7 +216,7 @@ class ZeroContext:
         self._param_tensor = {}
         self._grad_buffer = {}
         self._param_buffer = {}
-            
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         # reduce scatter gradients
         self.exit()

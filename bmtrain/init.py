@@ -9,13 +9,14 @@ from .global_var import config
 
 from . import nccl
 from .synchronize import synchronize
+<<<<<<< HEAD
 def init_distributed(
-        init_method : str = "env://",
-        seed : int = 0,
-        pipe_size: int = 1,
-        num_micro_batches: int = None,
-        tp_size : int = 1,
-    ):
+    init_method: str = "env://",
+    seed: int = 0,
+    pipe_size: int = -1,
+    num_micro_batches: int = None,
+    tp_size: int = 1,
+):
     """Initialize distributed training.
     This function will initialize the distributed training, set the random seed and global configurations.
     It must be called before any other distributed functions.
@@ -23,17 +24,17 @@ def init_distributed(
     Args:
         seed (int): The random seed.
         pipe_size (int) : pipe_size means that all processes will be divided into pipe_size groups
-        num_micro_batches (int) : means that the input batchs will be divided into num_micro_batches small batches. used in pipeline mode. 
+        num_micro_batches (int) : means that the input batchs will be divided into num_micro_batches small batches. used in pipeline mode.
         tp_size (int) : tp_size means the size of each of tensor parallel group
 
-    **init_distributed** reads the following environment variables: 
-    
+    **init_distributed** reads the following environment variables:
+
     * `WORLD_SIZE`: The total number gpus in the distributed training.
     * `RANK`: The global rank of the current gpu. From 0 to `WORLD_SIZE - 1`.
     * `MASTER_ADDR`: The address of the master node.
     * `MASTER_PORT`: The port of the master node.
     * `LOCAL_RANK`: The local rank of the current gpu.
-    
+
     Normally, all the environments variables above are setted by the pytorch distributed launcher.
 
     **Note**: Do not use any functions in torch.distributed package including `torch.distributed.init_process_group` .
@@ -46,18 +47,18 @@ def init_distributed(
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    local_size = int(os.environ.get("LOCAL_WORLD_SIZE","1"))
+    local_size = int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
     if "MASTER_ADDR" not in os.environ:
-        os.environ["MASTER_ADDR"]="localhost"
+        os.environ["MASTER_ADDR"] = "localhost"
     if "MASTER_PORT" not in os.environ:
-        os.environ["MASTER_PORT"]="10010"
+        os.environ["MASTER_PORT"] = "10010"
     addr = os.environ["MASTER_ADDR"]
     port = os.environ["MASTER_PORT"]
-    master = addr+":"+port
+    master = addr + ":" + port
     timeout = datetime.timedelta(seconds=1800)
     rendezvous_iterator = dist.rendezvous(
         init_method, rank, world_size, timeout=timeout
-    )   
+    )
 
     store, rank, world_size = next(rendezvous_iterator)
     store.set_timeout(timeout)
@@ -74,7 +75,7 @@ def init_distributed(
     config["load_stream"] = torch.cuda.Stream(priority=-1)
     config["tp_comm_stream"] = torch.cuda.Stream(priority=-1)
     config["pp_comm_stream"] = torch.cuda.Stream(priority=-1)
-    config['barrier_stream'] = torch.cuda.Stream()
+    config["barrier_stream"] = torch.cuda.Stream()
     config["load_event"] = torch.cuda.Event()
     config["tp_size"] = tp_size if tp_size > 0 else 1
     config["topology"] = topology(config)
@@ -86,31 +87,34 @@ def init_distributed(
     config["save_param_gather"] = True
     config["load_param_gather"] = True
     cpus_this_worker = None
-    
+
     all_available_cpus = sorted(list(os.sched_getaffinity(0)))
 
     cpus_per_worker = len(all_available_cpus) // local_size
-        
+
     if cpus_per_worker < 1:
         cpus_this_worker = all_available_cpus
         torch.set_num_threads(1)
     else:
-        cpus_this_worker = all_available_cpus[local_rank * cpus_per_worker : (local_rank + 1) * cpus_per_worker]
+        cpus_this_worker = all_available_cpus[
+            local_rank * cpus_per_worker : (local_rank + 1) * cpus_per_worker
+        ]
         os.sched_setaffinity(0, cpus_this_worker)
-        torch.set_num_threads( len(cpus_this_worker) )
+        torch.set_num_threads(len(cpus_this_worker))
 
     torch.manual_seed(seed)
     random.seed(seed)
     try:
         import numpy as np
+
         np.random.seed(seed)
     except ModuleNotFoundError:
         pass
-    
+
     if rank == 0:
-        unique_id : bytes = nccl.getUniqueId()
-        store.set("BMTRAIN_UNIQUE_ID", unique_id.hex() )
-    
+        unique_id: bytes = nccl.getUniqueId()
+        store.set("BMTRAIN_UNIQUE_ID", unique_id.hex())
+
     unique_id = bytes.fromhex(store.get("BMTRAIN_UNIQUE_ID").decode())
     config['comm'] = nccl.commInitRank(unique_id, world_size, rank)
     topo = config['topology']
@@ -159,27 +163,36 @@ def init_distributed(
 
     for i in range(world_size):
         if i == rank:
-            print_dict("Initialization", {
-                "rank": rank,
-                "local_rank": local_rank,
-                "world_size": world_size,
-                "local_size": local_size,
-                "master" : master,
-                "device": torch.cuda.current_device(),
-                "cpus": cpus_this_worker 
-            })
+            print_dict(
+                "Initialization",
+                {
+                    "rank": rank,
+                    "local_rank": local_rank,
+                    "world_size": world_size,
+                    "local_size": local_size,
+                    "master": master,
+                    "device": torch.cuda.current_device(),
+                    "cpus": cpus_this_worker,
+                },
+            )
         synchronize()
 
+
 class topology:
-    def __init__(self,config):
+    """A helper class to keep parallel information when using different parallel methods together."""
+
+    def __init__(self, config):
         # pipe_idx is the idx of the pipeline in the group
-        self.rank = config['rank']
+        self.rank = config["rank"]
         pp_size = config["pipe_size"]
         tp_size = config["tp_size"]
         world_size = config["world_size"]
-        assert world_size % (pp_size * tp_size) == 0, "The nums of GPUs must be divisible by the pipeline parallel size * tensor parallel size"
+        assert (
+            world_size % (pp_size * tp_size) == 0
+        ), "The nums of GPUs must be divisible by the pipeline parallel size * tensor parallel size"
 
         dp_size = world_size // (pp_size * tp_size)
+<<<<<<< HEAD
         config['tp_zero_size'] = dp_size
         config['zero_size'] = world_size // pp_size 
         self.pipe_size = config['pipe_size']
@@ -200,11 +213,16 @@ class topology:
             #pp->tp->zero
             self.pp_tp_zero_idx = self.pipe_rank * tp_size + self.tp_id 
             self.pp_tp_zero_id = self.pipe_idx // tp_size
-        #only zero
+        # only zero
         self.zero_idx = 0
         self.zero_id = self.rank
 
-    def get_group_id(self,group_name):
+    def get_group_id(self, group_name):
+        """Get group id of different parallel group.
+
+        Args:
+            group_name (str): must be one of "pipe", "zero", "tp_zero" or "tp".
+        """
         if group_name == "pipe":
             return self.pipe_idx
         elif group_name == "zero":
@@ -213,8 +231,13 @@ class topology:
             return self.tp_zero_idx
         elif group_name == "tp":
             return self.tp_idx
-        
-    def get_group_rank(self,group_name):
+
+    def get_group_rank(self, group_name):
+        """Get group rank of different parallel group.
+
+        Args:
+            group_name (str): must be one of "pipe", "zero", "tp_zero" or "tp".
+        """
         if group_name == "pipe":
             return self.pipe_rank
         elif group_name == "zero":
