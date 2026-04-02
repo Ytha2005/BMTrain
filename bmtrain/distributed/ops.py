@@ -20,12 +20,12 @@ DTYPE_LIST = [
 ]
 def send_activations(hidden_state, next_rank, comm):
     send_meta(hidden_state, next_rank, comm)
-    ncclSend(hidden_state.storage(), next_rank, comm)
+    ncclSend(hidden_state.contiguous().view(-1), next_rank, comm)
 
 def recv_activations(prev_rank, comm):
     dtype, shape = recv_meta(prev_rank, comm)
     hidden_state = torch.empty(shape, dtype=dtype, device="cuda")
-    ncclRecv(hidden_state.storage(), prev_rank, comm)
+    ncclRecv(hidden_state.view(-1), prev_rank, comm)
     return hidden_state
 
 def send_meta(x, next_rank, comm):
@@ -34,11 +34,11 @@ def send_meta(x, next_rank, comm):
     meta_data[1] = DTYPE_LIST.index(x.dtype)
     meta_data[2:len(x.size())+2] = torch.tensor(x.size(), device="cuda", dtype=torch.int)
     meta_data = meta_data.contiguous()
-    ncclSend(meta_data.storage(), next_rank, comm)
+    ncclSend(meta_data, next_rank, comm)
 
 def recv_meta(prev_rank, comm):
     meta_data = torch.tensor(data=[0]*50, device="cuda", dtype=torch.int)
-    ncclRecv(meta_data.storage(), prev_rank, comm)
+    ncclRecv(meta_data, prev_rank, comm)
     n_dims = meta_data[0].item()
     dtype = DTYPE_LIST[meta_data[1].item()]
     shape = meta_data[2:n_dims+2].tolist()
@@ -52,7 +52,7 @@ class OpBroadcast(torch.autograd.Function):
             comm = config["comm"]
         ctx.comm = comm
         outputs = torch.empty_like(src, dtype = src.dtype, device = src.device)
-        ncclBroadcast(src.storage(), outputs.storage(), root, comm)
+        ncclBroadcast(src.contiguous().view(-1), outputs.view(-1), root, comm)
         return outputs
 
     @staticmethod
@@ -74,13 +74,14 @@ class OpAllGather(torch.autograd.Function):
         world_size = commCount(comm)
         if not input.is_contiguous():
             input = input.contiguous()
-        if input.storage_offset() != 0 or input.storage().size() != input.numel():
+        # Clone if storage_offset != 0 so data_ptr points to the start of the tensor data.
+        if input.storage_offset() != 0:
             input = input.clone()
         output = torch.empty( (world_size,) + input.size(), dtype=input.dtype, device=input.device)
         ctx.comm = comm
         ncclAllGather(
-            input.storage(),
-            output.storage(),
+            input.view(-1),
+            output.view(-1),
             comm
         )
         return output
@@ -115,13 +116,14 @@ class OpReduceScatter(torch.autograd.Function):
         assert input.shape[0] % commCount(comm) == 0, "The dimension 0 must be divisible by the number of communication processes"
         if not input.is_contiguous():
             input = input.contiguous()
-        if input.storage_offset() != 0 or input.storage().size() != input.numel():
+        # Ensure data_ptr starts at offset 0 for NCCL.
+        if input.storage_offset() != 0:
             input = input.clone()
         output_shape = (input.shape[0] // commCount(comm), *input.shape[1:])
         output = torch.empty( output_shape, dtype=input.dtype, device=input.device )
         ncclReduceScatter(
-            input.storage(),
-            output.storage(),
+            input.view(-1),
+            output.view(-1),
             op,
             comm
         )
@@ -171,13 +173,14 @@ class OpAllReduce(torch.autograd.Function):
         ctx.comm = comm
         if not input.is_contiguous():
             input = input.contiguous()
-        if input.storage_offset() != 0 or input.storage().size() != input.numel():
+        # Ensure data_ptr starts at offset 0 for NCCL.
+        if input.storage_offset() != 0:
             input = input.clone()
         output = torch.empty( input.size(), dtype=input.dtype, device=input.device)
         
         ncclAllReduce(
-            input.storage(),
-            output.storage(),
+            input.view(-1),
+            output.view(-1),
             op,
             comm
         )
