@@ -1,6 +1,7 @@
 import torch
-from ..global_var import config
-from ..nccl import allGather as ncclAllGather, recv
+import bmtrain as bmt
+from ..global_var import config, rank
+from ..nccl import allGather as ncclAllGather
 from ..nccl import allReduce as ncclAllReduce
 from ..nccl import broadcast as ncclBroadcast
 from ..nccl import reduceScatter as ncclReduceScatter

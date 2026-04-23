@@ -4,8 +4,7 @@ from .global_var import config
 import warnings
 from typing import Optional
 
-
-def synchronize():
+def synchronize(comm=None):
     """
     Synchronize all the workers across all nodes. (both CPU and GPU are synchronized)
     """
